@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="theme-color" content="#185FA5">
+<link rel="manifest" href="manifest.json">
 <title>TILCBS Triage - หมอตำแยประเมินความเสี่ยงหญิงตั้งครรภ์</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -31,10 +33,15 @@
   .tri-btn-primary{background:#185FA5;color:#FFFFFF;border-color:#185FA5;font-weight:600}
   .tri-btn-primary:hover{background:#134B85}
   .tri-btn:disabled{opacity:0.5;cursor:not-allowed}
-  .tri-sync{padding:8px 16px;font-size:11px;color:#6B7280;text-align:center;background:#F9FAFB;border-top:1px solid #E5E7EB}
+  .tri-sync{padding:10px 16px;font-size:11px;color:#6B7280;background:#F9FAFB;border-top:1px solid #E5E7EB;display:flex;justify-content:space-between;align-items:center;gap:8px}
   .tri-sync.has-pending{color:#854F0B;background:#FEF3C7}
-  .tri-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1F2937;color:#FFF;padding:10px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity 0.3s;pointer-events:none;z-index:1000}
+  .tri-sync.all-synced{color:#27500A;background:#EAF3DE}
+  .tri-sync-btn{background:transparent;border:1px solid currentColor;color:inherit;padding:3px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-family:inherit}
+  .tri-sync-btn:hover{opacity:0.7}
+  .tri-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1F2937;color:#FFF;padding:10px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity 0.3s;pointer-events:none;z-index:1000;max-width:90%;text-align:center}
   .tri-toast.show{opacity:1}
+  .tri-toast.success{background:#16A34A}
+  .tri-toast.error{background:#DC2626}
 </style>
 </head>
 <body>
@@ -47,7 +54,6 @@
     <div class="tri-head-sub">หมอตำแย: <span id="tba-name-display">นางมาลี</span> · บ้านแม่กลองคี · อ.อุ้มผาง</div>
   </div>
 
-  <!-- ข้อมูลผู้รับบริการ -->
   <div class="tri-step">
     <div class="tri-step-h">ข้อมูลผู้รับบริการ</div>
     <label class="tri-label">รหัสผู้รับบริการ</label>
@@ -116,20 +122,23 @@
     <button class="tri-btn" id="btn-reset">เริ่มเคสใหม่</button>
   </div>
 
-  <div class="tri-sync" id="sync-status">รอ sync: 0 เคส</div>
+  <div class="tri-sync" id="sync-status">
+    <span id="sync-text">รอ sync: 0 เคส · ส่งแล้ว 0 เคส</span>
+    <button class="tri-sync-btn" id="btn-sync">Sync ตอนนี้</button>
+  </div>
 </div>
 
 <div class="tri-toast" id="toast"></div>
 
 <script>
 // ============ Config ============
-// เมื่อ deploy Apps Script แล้ว ให้แทนที่ URL นี้ด้วย Web App URL จริง
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzRX7nfKmeE5oony8qNfFU6sC4j4fTUlTuBiGWDCg91RZ-fQVYHYMWWK9BKZoREbXbH/exec';
-const APP_VERSION = 'v1.0';
+const APP_VERSION = 'v1.1';
 const TBA_NAME = 'นางมาลี';
 const VILLAGE = 'บ้านแม่กลองคี';
 const DISTRICT = 'อุ้มผาง';
 const PROVINCE = 'ตาก';
+const SYNC_INTERVAL_MS = 15000; // background sync ทุก 15 วินาที
 
 // ============ Risk calculation ============
 const cbs = document.querySelectorAll('.tri-frame input[type=checkbox]');
@@ -163,11 +172,11 @@ function updateRiskDisplay() {
 cbs.forEach(c => c.addEventListener('change', updateRiskDisplay));
 
 // ============ Toast ============
-function toast(msg, ms=2500) {
+function toast(msg, type='', ms=2500) {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), ms);
+  t.className = 'tri-toast show ' + type;
+  setTimeout(() => t.className = 'tri-toast', ms);
 }
 
 // ============ Online status ============
@@ -178,23 +187,41 @@ window.addEventListener('online', () => { updateOnline(); syncPending(); });
 window.addEventListener('offline', updateOnline);
 updateOnline();
 
-// ============ Pending queue (offline-first) ============
+// ============ Storage helpers ============
+const KEY_PENDING = 'tilcbs_pending';
+const KEY_SYNCED_COUNT = 'tilcbs_synced_count';
+
 function getPending() {
-  return JSON.parse(localStorage.getItem('tilcbs_pending') || '[]');
+  return JSON.parse(localStorage.getItem(KEY_PENDING) || '[]');
 }
 function setPending(arr) {
-  localStorage.setItem('tilcbs_pending', JSON.stringify(arr));
-  const n = arr.length;
-  const el = document.getElementById('sync-status');
-  el.textContent = 'รอ sync: ' + n + ' เคส';
-  el.classList.toggle('has-pending', n > 0);
+  localStorage.setItem(KEY_PENDING, JSON.stringify(arr));
+  refreshSyncBadge();
 }
-setPending(getPending());
+function getSyncedCount() {
+  return parseInt(localStorage.getItem(KEY_SYNCED_COUNT) || '0', 10);
+}
+function incSyncedCount(n=1) {
+  localStorage.setItem(KEY_SYNCED_COUNT, String(getSyncedCount() + n));
+  refreshSyncBadge();
+}
+
+function refreshSyncBadge() {
+  const pending = getPending().length;
+  const synced = getSyncedCount();
+  const el = document.getElementById('sync-status');
+  const txt = document.getElementById('sync-text');
+  txt.textContent = `รอ sync: ${pending} เคส · ส่งแล้ว ${synced} เคส`;
+  el.classList.toggle('has-pending', pending > 0);
+  el.classList.toggle('all-synced', pending === 0 && synced > 0);
+}
+refreshSyncBadge();
 
 // ============ Collect form data ============
 function collectData() {
   const r = calcRisk();
   const data = {
+    local_id: 'L-' + Date.now() + '-' + Math.random().toString(36).slice(2,7),
     submitted_at: new Date().toISOString(),
     app_version: APP_VERSION,
     tba_name: TBA_NAME,
@@ -214,48 +241,73 @@ function collectData() {
   return data;
 }
 
-// ============ Send to Apps Script ============
+// ============ Send to Apps Script (no preflight) ============
 async function sendOne(data) {
-  if (APPS_SCRIPT_URL.startsWith('PASTE_')) {
-    throw new Error('ยังไม่ได้ตั้งค่า APPS_SCRIPT_URL');
-  }
+  // ใช้ text/plain เพื่อไม่ trigger CORS preflight ที่ Apps Script ไม่รองรับ
   const res = await fetch(APPS_SCRIPT_URL, {
     method: 'POST',
-    body: JSON.stringify(data)
+    headers: {'Content-Type': 'text/plain;charset=utf-8'},
+    body: JSON.stringify(data),
+    redirect: 'follow'
   });
-  return res.json();
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const json = await res.json();
+  if (json.status !== 'ok') throw new Error(json.message || 'server error');
+  return json;
 }
 
+// ============ Background sync ============
+let syncing = false;
 async function syncPending() {
+  if (syncing) return;
+  if (!navigator.onLine) return;
   const pending = getPending();
-  if (pending.length === 0 || !navigator.onLine) return;
+  if (pending.length === 0) return;
+
+  syncing = true;
   const remain = [];
+  let sent = 0;
   for (const item of pending) {
-    try { await sendOne(item); } catch(e) { remain.push(item); }
+    try {
+      await sendOne(item);
+      sent++;
+    } catch(e) {
+      remain.push(item); // เก็บไว้ retry ครั้งหน้า
+    }
+  }
+  if (sent > 0) {
+    incSyncedCount(sent);
+    toast(`Sync สำเร็จ ${sent} เคส`, 'success', 2000);
   }
   setPending(remain);
-  if (remain.length === 0) toast('Sync สำเร็จทุกเคส');
+  syncing = false;
 }
 
-// ============ Save button ============
-document.getElementById('btn-save').addEventListener('click', async () => {
+// ============ Save button — LOCAL-FIRST (instant!) ============
+document.getElementById('btn-save').addEventListener('click', () => {
   const data = collectData();
-  if (!data.client_code) { toast('กรุณากรอกรหัสผู้รับบริการ'); return; }
-  if (!data.age_group) { toast('กรุณาเลือกช่วงอายุ'); return; }
+  if (!data.client_code) { toast('กรุณากรอกรหัสผู้รับบริการ', 'error'); return; }
+  if (!data.age_group) { toast('กรุณาเลือกช่วงอายุ', 'error'); return; }
 
-  if (navigator.onLine && !APPS_SCRIPT_URL.startsWith('PASTE_')) {
-    try {
-      await sendOne(data);
-      toast('บันทึกเคส ' + data.client_code + ' สำเร็จ');
-      resetForm();
-      return;
-    } catch(e) { /* fall through to offline save */ }
-  }
+  // เก็บลง localStorage ทันที (ไม่รออะไรเลย)
   const pending = getPending();
   pending.push(data);
   setPending(pending);
-  toast('บันทึก offline แล้ว (' + data.client_code + ') จะ sync เมื่อมีเน็ต');
+
+  // แจ้งผู้ใช้ทันที + เคลียร์ฟอร์ม
+  toast(`บันทึก ${data.client_code} สำเร็จ · ระดับ ${data.risk_level.toUpperCase()}`, 'success');
   resetForm();
+
+  // background sync (ไม่ await — ผู้ใช้ไม่ต้องรอ)
+  syncPending();
+});
+
+// Manual sync button
+document.getElementById('btn-sync').addEventListener('click', () => {
+  if (!navigator.onLine) { toast('ไม่มีอินเทอร์เน็ต', 'error'); return; }
+  if (getPending().length === 0) { toast('ไม่มีเคสรอ sync'); return; }
+  toast('กำลัง sync...', '', 1500);
+  syncPending();
 });
 
 // ============ Reset form ============
@@ -271,8 +323,14 @@ function resetForm() {
 }
 document.getElementById('btn-reset').addEventListener('click', resetForm);
 
-// Initial sync attempt
-syncPending();
+// ============ Background sync timer ============
+setInterval(syncPending, SYNC_INTERVAL_MS);
+syncPending(); // ลอง sync ตอนเปิดหน้า
+
+// ============ Service Worker (offline page) ============
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
 </script>
 </body>
 </html>
